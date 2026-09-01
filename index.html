@@ -105,6 +105,38 @@
   .hist ul { list-style: none; margin: 0; padding: 0; }
   .hist li { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dotted var(--rule); }
   .hist li:last-child { border: 0; }
+  .timer {
+    position: sticky; top: 0; z-index: 40;
+    background: var(--graphite); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 9px 11px; margin-bottom: 14px;
+  }
+  .timer.live { border-color: var(--pin); }
+  .timer.last { border-color: var(--warn); }
+  .trow { display: flex; align-items: center; gap: 11px; }
+  .tclock {
+    font-family: var(--mono); font-weight: 600; font-size: 26px; line-height: 1;
+    min-width: 74px; letter-spacing: -.01em;
+  }
+  .timer.live .tclock { color: var(--pin); }
+  .timer.last .tclock { color: var(--warn); }
+  .tlabel { flex: 1; font-size: 13px; color: var(--chalk-dim); line-height: 1.25; }
+  .tbtn {
+    font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+    font-weight: 700; font-size: 14px; padding: 10px 15px; border-radius: 2px;
+    border: 0; background: var(--pin); color: var(--graphite); cursor: pointer; white-space: nowrap;
+  }
+  .tbtn.stop { background: transparent; color: var(--chalk-dim); border: 1px solid var(--rule); font-weight: 600; }
+  .ttrack { height: 3px; background: var(--plate); border-radius: 2px; margin-top: 9px; overflow: hidden; }
+  .tfill { height: 100%; background: var(--pin); width: 100%; }
+  .timer.last .tfill { background: var(--warn); }
+  .tpre { display: flex; gap: 5px; margin-top: 9px; }
+  .tpre button {
+    flex: 1; font-family: var(--mono); font-size: 13px; padding: 7px 0;
+    background: transparent; color: var(--chalk-dim); border: 1px solid var(--rule);
+    border-radius: 2px; cursor: pointer;
+  }
+  .tpre button.on { color: var(--graphite); background: var(--chalk); border-color: var(--chalk); }
+
   .hist .rise { color: var(--pin); }
   .hist .rr { display: flex; align-items: center; gap: 10px; }
   .del { background: none; border: 0; color: var(--chalk-dim); font-family: var(--mono); font-size: 15px; line-height: 1; padding: 4px 6px; cursor: pointer; border-radius: 2px; }
@@ -168,6 +200,21 @@
   <button class="tab" data-tab="data" role="tab" aria-selected="false">Backup</button>
 </div>
 
+<div class="timer" id="timer">
+  <div class="trow">
+    <span class="tclock" id="t-clock">1:00</span>
+    <span class="tlabel" id="t-label">Rest between sets</span>
+    <button class="tbtn" id="t-btn">Start</button>
+  </div>
+  <div class="ttrack"><div class="tfill" id="t-fill"></div></div>
+  <div class="tpre" id="t-pre">
+    <button data-t="45">45s</button>
+    <button data-t="60" class="on">60s</button>
+    <button data-t="90">90s</button>
+    <button data-t="120">2m</button>
+  </div>
+</div>
+
 <div id="view"><div class="empty">Loading…</div></div>
 
 <dialog class="md" id="edit">
@@ -220,7 +267,7 @@
   };
   const GRPS = ['Legs','Push','Pull','Core'];
 
-  let S = { m: [], session: 'A', lastBackup: null, tab: 'today' };
+  let S = { m: [], session: 'A', lastBackup: null, tab: 'today', tdur: 60 };
   let open = null, editing = null, pending = null;
   let storageOK = false;
 
@@ -244,6 +291,7 @@
       try {
         const p = JSON.parse(raw);
         S.m = p.m || []; S.session = p.session || 'A'; S.lastBackup = p.lastBackup || null;
+        S.tdur = p.tdur || 60;
       } catch (e) { S.m = []; }
     }
     MACHINES.forEach(d => { if (!S.m.some(x => x.id === d.id)) S.m.push(Object.assign({ reps:12, sets:3, hist:[] }, d)); });
@@ -251,7 +299,7 @@
 
   function save() {
     if (!storageOK) return;
-    try { localStorage.setItem(KEY, JSON.stringify({ m: S.m, session: S.session, lastBackup: S.lastBackup })); }
+    try { localStorage.setItem(KEY, JSON.stringify({ m: S.m, session: S.session, lastBackup: S.lastBackup, tdur: S.tdur })); }
     catch (e) { storageOK = false; toast('Storage full or blocked'); }
   }
 
@@ -431,6 +479,89 @@
       : S.tab === 'stats' ? renderStats() : renderData();
   }
 
+  /* ---------- rest timer ---------- */
+  const T = { endsAt: 0, tick: null, ac: null, wake: null };
+
+  function fmt(sec) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
+  function primeAudio() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!T.ac) T.ac = new AC();
+      if (T.ac.state === 'suspended') T.ac.resume();
+    } catch (e) {}
+  }
+
+  function chime() {
+    try {
+      if (T.ac) {
+        const n = T.ac.currentTime;
+        [[0, 660], [0.2, 660], [0.4, 880]].forEach(([off, hz]) => {
+          const o = T.ac.createOscillator(), g = T.ac.createGain();
+          o.type = 'sine'; o.frequency.value = hz;
+          g.gain.setValueAtTime(0.0001, n + off);
+          g.gain.exponentialRampToValueAtTime(0.25, n + off + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.0001, n + off + 0.18);
+          o.connect(g); g.connect(T.ac.destination);
+          o.start(n + off); o.stop(n + off + 0.2);
+        });
+      }
+    } catch (e) {}
+    try { if (navigator.vibrate) navigator.vibrate([140, 90, 140]); } catch (e) {}
+  }
+
+  async function keepAwake(on) {
+    try {
+      if (on && 'wakeLock' in navigator) { T.wake = await navigator.wakeLock.request('screen'); }
+      else if (T.wake) { T.wake.release(); T.wake = null; }
+    } catch (e) { T.wake = null; }
+  }
+
+  function paintTimer() {
+    const bar = $('timer');
+    const running = T.endsAt > 0;
+    const left = running ? Math.max(0, Math.ceil((T.endsAt - Date.now()) / 1000)) : S.tdur;
+    $('t-clock').textContent = fmt(left);
+    $('t-fill').style.width = (running ? (left / S.tdur) * 100 : 100) + '%';
+    $('t-btn').textContent = running ? 'Stop' : 'Start';
+    $('t-btn').className = 'tbtn' + (running ? ' stop' : '');
+    $('t-label').textContent = running
+      ? (left <= 10 ? 'Almost — get set' : 'Resting')
+      : 'Rest between sets';
+    bar.className = 'timer' + (running ? (left <= 10 ? ' last' : ' live') : '');
+    $('t-pre').style.display = running ? 'none' : 'flex';
+    document.querySelectorAll('#t-pre button').forEach(b =>
+      b.classList.toggle('on', parseInt(b.dataset.t, 10) === S.tdur));
+  }
+
+  function stopTimer(finished) {
+    clearInterval(T.tick); T.tick = null; T.endsAt = 0;
+    keepAwake(false);
+    if (finished) chime();
+    paintTimer();
+  }
+
+  function startTimer() {
+    primeAudio();
+    T.endsAt = Date.now() + S.tdur * 1000;
+    keepAwake(true);
+    clearInterval(T.tick);
+    T.tick = setInterval(() => {
+      if (Date.now() >= T.endsAt) stopTimer(true); else paintTimer();
+    }, 250);
+    paintTimer();
+  }
+
+  $('t-btn').addEventListener('click', () => { T.endsAt ? stopTimer(false) : startTimer(); });
+  $('t-pre').addEventListener('click', e => {
+    const b = e.target.closest('[data-t]'); if (!b) return;
+    S.tdur = parseInt(b.dataset.t, 10); save(); paintTimer();
+  });
+
   /* ---------- backup / restore ---------- */
   let dl = undefined;   // undefined = not asked yet, null = unavailable
   async function downloader() {
@@ -585,6 +716,7 @@
 
   load();
   S.session = suggestSession();
+  paintTimer();
   render();
 })();
 </script>
