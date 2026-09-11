@@ -248,8 +248,9 @@
     { id:'a2', ref:'A2', name:'Shoulder Press',   grp:'Push', w:5,    swap:'a3', set:'' },
     { id:'a3', ref:'A3', name:'Triceps Press',    grp:'Push', w:20,   swap:'a2', set:'' },
     { id:'a4', ref:'A4', name:'Biceps Curl',      grp:'Pull', w:12.5, swap:'a5', set:'' },
-    { id:'a5', ref:'A5', name:'Row',              grp:'Pull', w:15,   swap:'a4', set:'Try alternate-arm action' },
+    { id:'a5', ref:'A5', name:'Row',              grp:'Pull', w:15,   swap:'a4', set:'Seat 3 · try alternate-arm action' },
     { id:'a6', ref:'A6', name:'Pec Fly',          grp:'Push', w:5,    swap:'b2', set:'' },
+    { id:'a7', ref:'A6', name:'Pulldown',         grp:'Pull', w:27.5, swap:'a4', set:'' },
     { id:'b1', ref:'B1', name:'Seated Leg Press', grp:'Legs', w:12.5, swap:'b5', set:'Seat 6' },
     { id:'b2', ref:'B2', name:'Chest Press',      grp:'Push', w:12.5, swap:'a6', set:'Arms at 2 (of 1-2-3)' },
     { id:'b3', ref:'B3', name:'Leg Curl (prone)', grp:'Legs', w:5,    swap:'b4', set:'Bring a small towel' },
@@ -258,14 +259,15 @@
     { id:'c1', ref:'C1', name:'Abdominal',        grp:'Core', w:12.5, swap:'c4', set:'' },
     { id:'c2', ref:'C2', name:'Hip Adduction',    grp:'Core', w:20,   swap:'c3', set:'' },
     { id:'c3', ref:'C3', name:'Hip Abduction',    grp:'Core', w:20,   swap:'c2', set:'' },
-    { id:'c4', ref:'C4', name:'Back Extension',   grp:'Core', w:20,   swap:'c1', set:'' }
+    { id:'c4', ref:'C4', name:'Back Extension',   grp:'Core', w:20,   swap:'c1', set:'Back 3, seat 4' }
   ];
 
   const SESSIONS = {
     A: { name:'Session A', tag:'Legs and push', ids:['b1','b5','b2','a2','c1'] },
-    B: { name:'Session B', tag:'Legs and pull', ids:['b4','c3','a5','a3','c4'] }
+    B: { name:'Session B', tag:'Legs and pull', ids:['b4','c3','a7','a5','c4'] }
   };
   const GRPS = ['Legs','Push','Pull','Core'];
+  const SET_REV = 2;
 
   let S = { m: [], session: 'A', lastBackup: null, tab: 'today', tdur: 60 };
   let open = null, editing = null, pending = null;
@@ -291,15 +293,24 @@
       try {
         const p = JSON.parse(raw);
         S.m = p.m || []; S.session = p.session || 'A'; S.lastBackup = p.lastBackup || null;
-        S.tdur = p.tdur || 60;
+        S.tdur = p.tdur || 60; S.setRev = p.setRev || 0;
       } catch (e) { S.m = []; }
     }
     MACHINES.forEach(d => { if (!S.m.some(x => x.id === d.id)) S.m.push(Object.assign({ reps:12, sets:3, hist:[] }, d)); });
+    // push corrected seat settings through to existing saves, leaving history alone
+    if ((S.setRev || 0) < SET_REV) {
+      MACHINES.forEach(d => {
+        const m = S.m.find(x => x.id === d.id);
+        if (m && d.set) { m.set = d.set; m.ref = d.ref; }
+      });
+      S.setRev = SET_REV;
+      save();
+    }
   }
 
   function save() {
     if (!storageOK) return;
-    try { localStorage.setItem(KEY, JSON.stringify({ m: S.m, session: S.session, lastBackup: S.lastBackup, tdur: S.tdur })); }
+    try { localStorage.setItem(KEY, JSON.stringify({ m: S.m, session: S.session, lastBackup: S.lastBackup, tdur: S.tdur, setRev: S.setRev })); }
     catch (e) { storageOK = false; toast('Storage full or blocked'); }
   }
 
@@ -448,7 +459,30 @@
       '<div class="blk">Current weight by machine</div>' +
       rows.map(r => '<div class="bar"><span class="lbl">' + esc(r.name) + '</span>' +
         '<span class="track"><span class="fill" style="width:' + (r.now / max * 100) + '%"></span></span>' +
-        '<span class="val">' + r.now + ' kg' + (r.gain > 0 ? ' +' + r.gain : '') + '</span></div>').join('');
+        '<span class="val">' + r.now + ' kg' + (r.gain > 0 ? ' +' + r.gain : '') + '</span></div>').join('') +
+      usageHTML();
+  }
+
+  function usageHTML() {
+    const use = S.m.map(m => ({
+      name: m.name, ref: m.ref, n: m.hist.length,
+      since: m.hist.length ? days(m.hist[0].at) : null
+    })).sort((a, b) => a.n - b.n || (b.since || 9999) - (a.since || 9999));
+    const max = Math.max(...use.map(u => u.n), 1);
+    const cold = use.filter(u => u.n === 0 || (u.since !== null && u.since > 21));
+
+    return '<div class="blk">Times used — least first</div>' +
+      use.map(u => {
+        const label = u.n === 0 ? 'never' : u.n + '× · ' + (u.since === 0 ? 'today' : u.since + 'd');
+        return '<div class="bar"><span class="lbl">' + esc(u.name) + '</span>' +
+          '<span class="track"><span class="fill" style="width:' + (u.n / max * 100) + '%;' +
+          (u.n === 0 ? 'background:var(--warn)' : '') + '"></span></span>' +
+          '<span class="val">' + label + '</span></div>';
+      }).join('') +
+      (cold.length
+        ? '<p class="note">Neglected: <b>' + cold.map(c => esc(c.name)).join(', ') +
+          '</b>. Any of these can be swapped into a session in place of something you have done twice this fortnight.</p>'
+        : '<p class="note">Nothing neglected — every machine has had a turn recently.</p>');
   }
 
   function renderData() {
@@ -477,10 +511,19 @@
     view().innerHTML = S.tab === 'today' ? renderToday()
       : S.tab === 'all' ? renderAll()
       : S.tab === 'stats' ? renderStats() : renderData();
+    paintTimer();
   }
 
   /* ---------- rest timer ---------- */
   const T = { endsAt: 0, tick: null, ac: null, wake: null };
+
+  function doneTodayLabel() {
+    const n = S.m.filter(didToday).length;
+    if (!n) return 'Rest between sets — nothing logged yet today';
+    const inSession = SESSIONS[S.session].ids.map(byId).filter(m => m && didToday(m)).length;
+    return n + (n === 1 ? ' machine' : ' machines') + ' done today' +
+      (inSession < n ? ' (' + inSession + ' in ' + SESSIONS[S.session].name + ')' : '');
+  }
 
   function fmt(sec) {
     const m = Math.floor(sec / 60), s = sec % 60;
@@ -531,7 +574,7 @@
     $('t-btn').className = 'tbtn' + (running ? ' stop' : '');
     $('t-label').textContent = running
       ? (left <= 10 ? 'Almost — get set' : 'Resting')
-      : 'Rest between sets';
+      : doneTodayLabel();
     bar.className = 'timer' + (running ? (left <= 10 ? ' last' : ' live') : '');
     $('t-pre').style.display = running ? 'none' : 'flex';
     document.querySelectorAll('#t-pre button').forEach(b =>
