@@ -246,7 +246,8 @@
 
   const MACHINES = [
     { id:'a2', ref:'A2', name:'Shoulder Press',   grp:'Push', w:5,    swap:'a3', set:'' },
-    { id:'a3', ref:'A3', name:'Triceps Press',    grp:'Push', w:20,   swap:'a2', set:'' },
+    { id:'a1', ref:'A1', name:'Assist Dip',       grp:'Push', w:57.5, swap:'a3', set:'Assistance — a LOWER number is harder', assist:true },
+    { id:'a3', ref:'A3', name:'Triceps Press',    grp:'Push', w:20,   swap:'a2', set:'Come all the way up' },
     { id:'a4', ref:'A4', name:'Biceps Curl',      grp:'Pull', w:12.5, swap:'a5', set:'' },
     { id:'a5', ref:'A5', name:'Row',              grp:'Pull', w:15,   swap:'a4', set:'Seat 3 · try alternate-arm action' },
     { id:'a6', ref:'A6', name:'Pec Fly',          grp:'Push', w:5,    swap:'b2', set:'' },
@@ -263,11 +264,11 @@
   ];
 
   const SESSIONS = {
-    A: { name:'Session A', tag:'Legs and push', ids:['b1','b5','b2','a2','c1'] },
+    A: { name:'Session A', tag:'Legs and push', ids:['b1','b5','b2','a2','a1','c1'] },
     B: { name:'Session B', tag:'Legs and pull', ids:['b4','c3','a7','a5','c4'] }
   };
   const GRPS = ['Legs','Push','Pull','Core'];
-  const SET_REV = 2;
+  const SET_REV = 3;
 
   let S = { m: [], session: 'A', lastBackup: null, tab: 'today', tdur: 60 };
   let open = null, editing = null, pending = null;
@@ -392,22 +393,23 @@
 
   function cardHTML(m) {
     const isOpen = open === m.id, done = didToday(m), up = readyUp(m);
-    const sw = m.swap ? byId(m.swap) : null;
+    const nextW = m.assist ? Math.max(BASE, m.w - STEP) : m.w + STEP;
     return '<div class="card' + (isOpen ? ' open' : '') + (done ? ' done' : '') + '" data-id="' + m.id + '">' +
       '<button class="top" data-a="open">' + stackHTML(m) +
         '<div><div class="nm">' + esc(m.name) + '</div><div class="sub">' + m.ref + ' · ' +
           (done ? '<span class="ok">' + ago(m) + '</span>' : ago(m)) +
-          (up ? ' · <span class="up">add 2.5</span>' : '') + '</div></div>' +
+          (up ? ' · <span class="up">' + (m.assist ? 'drop 2.5' : 'add 2.5') + '</span>' : '') + '</div></div>' +
         '<div class="kg">' + m.w + '<small>KG</small></div></button>' +
       '<div class="cbody">' +
         (m.set ? '<p class="setting">' + esc(m.set) + '</p>' : '') +
-        (sw ? '<p class="swapline">If it is taken: <b>' + esc(sw.name) + '</b> (' + sw.ref + '), or skip ahead and come back.</p>' : '') +
         '<div class="row">' +
           '<div class="fld"><label>Weight</label>' + stepHTML(m, 'w', STEP) + '<div class="pinout">' + pinText(m.w) + '</div></div>' +
           '<div class="fld"><label>Reps</label>' + stepHTML(m, 'reps', 1) +
             '<label style="margin-top:9px">Working sets</label>' + stepHTML(m, 'sets', 1) + '</div>' +
         '</div>' +
-        (up ? '<div class="nudge">Two sessions at ' + m.w + ' kg for 12+ reps. Go up to ' + (m.w + STEP) + ' kg.</div>' : '') +
+        (up ? '<div class="nudge">Two sessions at ' + m.w + ' kg for 12+ reps. ' +
+          (m.assist ? 'Take the assistance down to ' + nextW + ' kg — less help, more work.'
+                    : 'Go up to ' + nextW + ' kg.') + '</div>' : '') +
         '<button class="go' + (done ? ' did' : '') + '" data-a="log">' + (done ? 'Log again' : 'Log it') + '</button>' +
         histHTML(m) +
         '<div class="tools"><button data-a="edit">Edit</button></div>' +
@@ -539,22 +541,29 @@
     } catch (e) {}
   }
 
-  function chime() {
+  // seq entries: [offset, frequency, length, volume]
+  function tones(seq) {
     try {
-      if (T.ac) {
-        const n = T.ac.currentTime;
-        [[0, 660], [0.2, 660], [0.4, 880]].forEach(([off, hz]) => {
-          const o = T.ac.createOscillator(), g = T.ac.createGain();
-          o.type = 'sine'; o.frequency.value = hz;
-          g.gain.setValueAtTime(0.0001, n + off);
-          g.gain.exponentialRampToValueAtTime(0.25, n + off + 0.01);
-          g.gain.exponentialRampToValueAtTime(0.0001, n + off + 0.18);
-          o.connect(g); g.connect(T.ac.destination);
-          o.start(n + off); o.stop(n + off + 0.2);
-        });
-      }
+      if (!T.ac) return;
+      const n = T.ac.currentTime;
+      seq.forEach(([off, hz, len, vol]) => {
+        const o = T.ac.createOscillator(), g = T.ac.createGain();
+        o.type = 'sine'; o.frequency.value = hz;
+        g.gain.setValueAtTime(0.0001, n + off);
+        g.gain.exponentialRampToValueAtTime(vol, n + off + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, n + off + len);
+        o.connect(g); g.connect(T.ac.destination);
+        o.start(n + off); o.stop(n + off + len + 0.02);
+      });
     } catch (e) {}
-    try { if (navigator.vibrate) navigator.vibrate([140, 90, 140]); } catch (e) {}
+  }
+
+  function ping(kind) {
+    primeAudio();
+    if (kind === 'start')      tones([[0, 880, 0.11, 0.18]]);
+    else if (kind === 'log')   tones([[0, 660, 0.09, 0.18], [0.1, 990, 0.13, 0.2]]);
+    else                       tones([[0, 660, 0.18, 0.25], [0.2, 660, 0.18, 0.25], [0.4, 880, 0.2, 0.25]]);
+    try { if (navigator.vibrate) navigator.vibrate(kind === 'done' ? [140, 90, 140] : 55); } catch (e) {}
   }
 
   async function keepAwake(on) {
@@ -584,12 +593,12 @@
   function stopTimer(finished) {
     clearInterval(T.tick); T.tick = null; T.endsAt = 0;
     keepAwake(false);
-    if (finished) chime();
+    if (finished) ping('done');
     paintTimer();
   }
 
   function startTimer() {
-    primeAudio();
+    ping('start');
     T.endsAt = Date.now() + S.tdur * 1000;
     keepAwake(true);
     clearInterval(T.tick);
@@ -680,6 +689,7 @@
 
   view().addEventListener('click', async e => {
     const btn = e.target.closest('[data-a]'); if (!btn) return;
+    primeAudio();   // any tap counts as the gesture iOS needs before sound will play
     const a = btn.dataset.a;
 
     if (a === 'switch') { S.session = S.session === 'A' ? 'B' : 'A'; save(); render(); return; }
@@ -705,7 +715,7 @@
     else if (a === 'log') {
       m.hist.unshift({ at: new Date().toISOString(), w: m.w, reps: m.reps, sets: m.sets });
       m.hist = m.hist.slice(0, 80);
-      save(); toast(m.name + ' logged'); open = null; render();
+      save(); ping('log'); toast(m.name + ' logged'); open = null; render();
     }
     else if (a === 'rm') {
       if (btn.dataset.armed !== '1') {
